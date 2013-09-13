@@ -9,6 +9,8 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -26,6 +28,7 @@ type Vhost struct {
 	Hostnames []string
 	Docroot   string
 	Rpc       RpcConf
+	Proxy     map[string]string
 }
 
 type Config struct {
@@ -101,6 +104,11 @@ func addHostToRoute(host string, route *mux.Route) *mux.Route {
 
 func addRpcHandler(r *mux.Router, host string, rpc RpcConf, relayConn iris.Connection) {
 	if rpc.Path != "" {
+		if relayConn == nil {
+			log.Println("Iris not enabled - skipping config for path:", rpc.Path)
+			return
+		}
+
 		path := rpc.Path
 		if path == "" {
 			path = "/api/"
@@ -124,14 +132,29 @@ func addStaticHandler(r *mux.Router, host, docroot string) {
 	addHostToRoute(host, r.PathPrefix("/").Handler(http.FileServer(http.Dir(docroot))))
 }
 
+func addProxyHandlers(r *mux.Router, host string, proxy map[string]string) {
+	for path, endpoint := range proxy {
+		u, err := url.Parse(endpoint)
+		if err != nil {
+			panic(err)
+		}
+		log.Println("Proxying", nameForHost(host), path, "to:", endpoint)
+		addHostToRoute(host, r.PathPrefix(path).Handler(httputil.NewSingleHostReverseProxy(u))).Methods("GET", "POST", "PUT", "HEAD", "DELETE")
+	}
+}
+
 func addVhost(r *mux.Router, vhost Vhost, isDefault bool, relayConn iris.Connection) {
 	for _, host := range vhost.Hostnames {
 		addRpcHandler(r, host, vhost.Rpc, relayConn)
+		addProxyHandlers(r, host, vhost.Proxy)
+
+		// this must be last - will serve all other paths
 		addStaticHandler(r, host, vhost.Docroot)
 	}
 
 	if isDefault {
 		addRpcHandler(r, "", vhost.Rpc, relayConn)
+		addProxyHandlers(r, "", vhost.Proxy)
 		addStaticHandler(r, "", vhost.Docroot)
 	}
 }
@@ -183,15 +206,19 @@ func main() {
 
 	log.Println("Got config:", conf)
 
-	relayConn, err := dialRelay(conf)
-	if err != nil {
-		log.Fatalln("Unable to connect to Iris relay on port", conf.Irisport, "-", err)
+	var relayConn iris.Connection
+	if conf.Irisport > 0 {
+		relayConn, err := dialRelay(conf)
+		if err != nil {
+			log.Fatalln("Unable to connect to Iris relay on port", conf.Irisport, "-", err)
+		}
+		defer relayConn.Close()
 	}
-	defer relayConn.Close()
 
+	log.Println("HTTP server listening on:", conf.Listen)
 	err = serveHTTP(conf, relayConn)
 	if err != nil {
 		log.Fatalln("Error in serveHTTP:", err)
 	}
-	log.Println("HTTP server listening on:", conf.Listen)
+
 }
