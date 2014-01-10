@@ -107,19 +107,15 @@ func (me *External) process(req *Request, timeout time.Duration) *Response {
 	// send - may block waiting for backends to attach
 	select {
 	case ch <- req:
-		// ok
-	case <-time.After(timeout):
-		return &Response{
-			HTTPStatus: 504,
-			Body:       []byte("Request timed out"),
+		select {
+		case res := <-req.ReplyTo:
+			return res
+		case <-time.After(timeout):
+			return &Response{
+				HTTPStatus: 504,
+				Body:       []byte("Request timed out"),
+			}
 		}
-	}
-
-	// sent - wait for response
-	ch <- req
-	select {
-	case res := <-req.ReplyTo:
-		return res
 	case <-time.After(timeout):
 		return &Response{
 			HTTPStatus: 504,
@@ -158,10 +154,9 @@ type Internal struct {
 }
 
 func (me *Internal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	log.Println("URI:", r.RequestURI)
 	queues := parseQueues(r.RequestURI)
 	if len(queues) < 1 {
-		http.Error(w, "Invalid URI. Must specify at least one queue", 400)
+		http.Error(w, fmt.Sprintf("Invalid URI: %s - Must specify at least one queue", r.RequestURI), 400)
 		return
 	}
 
@@ -262,6 +257,7 @@ func (me *Internal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			headers["X-Hub-Id"] = []string{id}
 			headers["X-Hub-Queue"] = []string{req.Queue}
 			frame := WriteFrame(headers, req.Body)
+			log.Println("Sending message to client:", chosen, id)
 			send <- &Message{Type: websocket.BinaryMessage, Data: frame}
 		}
 	}
@@ -277,5 +273,11 @@ func parseQueues(uri string) []string {
 		uri = uri[1:]
 	}
 
-	return strings.Split(uri, ",")
+	queues := make([]string, 0)
+	for _, s := range strings.Split(uri, ",") {
+		if s != "" {
+			queues = append(queues, s)
+		}
+	}
+	return queues
 }
