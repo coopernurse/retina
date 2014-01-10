@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"github.com/coopernurse/retina/ws"
-	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -13,9 +12,9 @@ import (
 	"syscall"
 )
 
-func run(url string, workers int, done chan bool, msgOut io.Writer) {
+func run(url string, workers int, done chan bool, msgs chan string) {
 	handler := func(headers map[string][]string, body []byte) (map[string][]string, []byte) {
-		fmt.Fprintln(msgOut, string(body))
+		msgs <- string(body)
 		queue, ok := headers["X-Hub-Queue"]
 		if !ok || len(queue) < 1 {
 			log.Println("backend: message missing X-Hub-Queue header")
@@ -85,9 +84,22 @@ func main() {
 
 	done := make(chan bool)
 	initSignalHandlers(done)
+
+	msgs := make(chan string, workers)
+	go func() {
+		for {
+			msg, ok := <-msgs
+			if !ok {
+				return
+			}
+			fmt.Fprintln(msgFile, msg)
+		}
+	}()
+
 	log.Println("backend: starting")
-	run(wsUrl, workers, done, msgFile)
-	log.Println("backend: exiting")
+	run(wsUrl, workers, done, msgs)
+	close(msgs)
 	logFile.Sync()
 	msgFile.Sync()
+	log.Println("backend: exiting")
 }

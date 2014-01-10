@@ -21,20 +21,36 @@ import (
 )
 
 type Backend struct {
+	Runner  *CmdRunner
 	LogFile string
 	MsgFile string
 }
 
 type CmdRunner struct {
-	C    *C
-	Cmd  *exec.Cmd
-	Done chan bool
+	C       *C
+	Cmd     *exec.Cmd
+	Done    chan bool
+	running bool
 }
 
 func (me *CmdRunner) Run() {
+	me.running = true
 	err := me.Cmd.Run()
 	me.Done <- true
 	me.C.Assert(err, IsNil)
+}
+
+func (me *CmdRunner) Stop() {
+	if me.running {
+		me.running = false
+		select {
+		case <-me.Done:
+			me.C.Assert(me.Cmd.ProcessState.Success(), Equals, true)
+		default:
+			me.Cmd.Process.Signal(syscall.SIGTERM)
+			me.Cmd.Process.Wait()
+		}
+	}
 }
 
 func NewFixture(c *C) *Fixture {
@@ -66,22 +82,26 @@ func (me *Fixture) StartRetina(sleepTime time.Duration) {
 	}
 }
 
-func (me *Fixture) StartBackend(workers int, sleepTime time.Duration) {
+func (me *Fixture) StartBackend(workers int, sleepTime time.Duration) *Backend {
 	me.lock.Lock()
 	defer me.lock.Unlock()
 
 	logFile := fmt.Sprintf("/tmp/backend_log_%d.txt", len(me.Backends))
 	msgFile := fmt.Sprintf("/tmp/backend_msg_%d.txt", len(me.Backends))
-	me.Backends = append(me.Backends, &Backend{LogFile: logFile, MsgFile: msgFile})
-	me.TmpFiles = append(me.TmpFiles, logFile, msgFile)
 
-	me.runCmd("../bin/backend", "-u", "ws://localhost:9391/",
+	r := me.runCmd("../bin/backend", "-u", "ws://localhost:9391/",
 		"-w", strconv.Itoa(workers),
 		"-l", logFile,
 		"-m", msgFile)
+
+	b := &Backend{LogFile: logFile, MsgFile: msgFile, Runner: r}
+	me.Backends = append(me.Backends, b)
+	me.TmpFiles = append(me.TmpFiles, logFile, msgFile)
+
 	if sleepTime > 0 {
 		time.Sleep(sleepTime)
 	}
+	return b
 }
 
 func (me *Fixture) RunEchoClient(workers int, runTime time.Duration) {
@@ -164,12 +184,13 @@ func (me *Fixture) VerifyMessages() {
 	sort.Strings(me.OutMsgs)
 	sort.Strings(backendMsgs)
 
-	me.C.Check(len(backendMsgs), Equals, len(me.OutMsgs), Commentf("VerifyMessages - length mismatch"))
+	me.C.Check(len(backendMsgs) > 0, Equals, true)
+	me.C.Check(len(backendMsgs), Equals, len(me.OutMsgs))
 
 	errs := 0
 	for x := 0; x < len(me.OutMsgs) && x < len(backendMsgs) && errs < 3; x++ {
-		if me.OutMsgs[x] != backendMsgs[x] {
-			me.C.Errorf("VerifyMessages: %d: %s != %s", x, me.OutMsgs[x], backendMsgs[x])
+		if backendMsgs[x] != me.OutMsgs[x] {
+			me.C.Errorf("VerifyMessages: %d: %s != %s", x, backendMsgs[x], me.OutMsgs[x])
 			errs++
 		}
 	}
@@ -177,14 +198,7 @@ func (me *Fixture) VerifyMessages() {
 
 func (me *Fixture) Destroy() {
 	for x := len(me.Commands) - 1; x >= 0; x-- {
-		cmd := me.Commands[x]
-		select {
-		case <-cmd.Done:
-			me.C.Assert(cmd.Cmd.ProcessState.Success(), Equals, true)
-		default:
-			cmd.Cmd.Process.Signal(syscall.SIGTERM)
-			cmd.Cmd.Process.Wait()
-		}
+		me.Commands[x].Stop()
 	}
 
 	// for _, fname := range me.TmpFiles {
@@ -192,7 +206,7 @@ func (me *Fixture) Destroy() {
 	// }
 }
 
-func (me *Fixture) runCmd(name string, params ...string) {
+func (me *Fixture) runCmd(name string, params ...string) *CmdRunner {
 	cmd := exec.Command(name, params...)
 	runner := &CmdRunner{
 		C:    me.C,
@@ -201,6 +215,7 @@ func (me *Fixture) runCmd(name string, params ...string) {
 	}
 	go runner.Run()
 	me.Commands = append(me.Commands, runner)
+	return runner
 }
 
 func (me *Fixture) writeFile(fname, contents string) {
