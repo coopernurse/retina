@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -175,12 +176,13 @@ func (me *Fixture) VerifyMessages() {
 }
 
 func (me *Fixture) Destroy() {
-	for _, cmd := range me.Commands {
+	for x := len(me.Commands) - 1; x >= 0; x-- {
+		cmd := me.Commands[x]
 		select {
 		case <-cmd.Done:
 			me.C.Assert(cmd.Cmd.ProcessState.Success(), Equals, true)
 		default:
-			cmd.Cmd.Process.Kill()
+			cmd.Cmd.Process.Signal(syscall.SIGTERM)
 			cmd.Cmd.Process.Wait()
 		}
 	}
