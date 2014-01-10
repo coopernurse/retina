@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"flag"
+	"github.com/coopernurse/retina/ws"
 	"github.com/gorilla/mux"
 	"github.com/karalabe/iris-go"
 	"io/ioutil"
@@ -24,17 +25,24 @@ type RpcConf struct {
 	Timeout int
 }
 
+type WsHubConf struct {
+	Listen    string
+	Heartbeat int
+}
+
 type Vhost struct {
 	Hostnames []string
 	Docroot   string
 	Rpc       RpcConf
 	Proxy     map[string]string
+	Wshub     map[string]string
 }
 
 type Config struct {
-	Listen   string
-	Irisport int
-	Vhosts   map[string]Vhost
+	Listen        string
+	Irisport      int
+	Vhosts        map[string]Vhost
+	Websockethubs map[string]WsHubConf
 }
 
 func loadConfig(filename string) (conf Config, err error) {
@@ -127,6 +135,23 @@ func addRpcHandler(r *mux.Router, host string, rpc RpcConf, relayConn iris.Conne
 	}
 }
 
+func addWsHubHandler(r *mux.Router, host string, paths map[string]string, wsHubs map[string]*retinaws.External) {
+	for path, wshubName := range paths {
+		if !strings.HasSuffix(path, "/") {
+			path += "/"
+		}
+		path += "{queue}"
+
+		gateway, ok := wsHubs[wshubName]
+		if ok {
+			log.Println("Configuring", nameForHost(host), "with WsHub path:", path)
+			addHostToRoute(host, r.Handle(path, gateway)).Methods("GET", "POST", "PUT", "HEAD", "DELETE")
+		} else {
+			log.Println("Error: No websockethubs found with name:", wshubName)
+		}
+	}
+}
+
 func addStaticHandler(r *mux.Router, host, docroot string) {
 	log.Println("Configuring", nameForHost(host), "with docroot:", docroot)
 	addHostToRoute(host, r.PathPrefix("/").Handler(http.FileServer(http.Dir(docroot))))
@@ -143,10 +168,11 @@ func addProxyHandlers(r *mux.Router, host string, proxy map[string]string) {
 	}
 }
 
-func addVhost(r *mux.Router, vhost Vhost, isDefault bool, relayConn iris.Connection) {
+func addVhost(r *mux.Router, vhost Vhost, isDefault bool, relayConn iris.Connection, wsHubs map[string]*retinaws.External) {
 	for _, host := range vhost.Hostnames {
 		addRpcHandler(r, host, vhost.Rpc, relayConn)
 		addProxyHandlers(r, host, vhost.Proxy)
+		addWsHubHandler(r, host, vhost.Wshub, wsHubs)
 
 		// this must be last - will serve all other paths
 		addStaticHandler(r, host, vhost.Docroot)
@@ -155,11 +181,12 @@ func addVhost(r *mux.Router, vhost Vhost, isDefault bool, relayConn iris.Connect
 	if isDefault {
 		addRpcHandler(r, "", vhost.Rpc, relayConn)
 		addProxyHandlers(r, "", vhost.Proxy)
+		addWsHubHandler(r, "", vhost.Wshub, wsHubs)
 		addStaticHandler(r, "", vhost.Docroot)
 	}
 }
 
-func initRouter(conf Config, relayConn iris.Connection) *mux.Router {
+func initRouter(conf Config, relayConn iris.Connection, wsHubs map[string]*retinaws.External) *mux.Router {
 	r := mux.NewRouter()
 
 	addDefault := false
@@ -167,19 +194,19 @@ func initRouter(conf Config, relayConn iris.Connection) *mux.Router {
 		if name == "default" {
 			addDefault = true
 		} else {
-			addVhost(r, vhost, false, relayConn)
+			addVhost(r, vhost, false, relayConn, wsHubs)
 		}
 	}
 
 	if addDefault {
-		addVhost(r, conf.Vhosts["default"], true, relayConn)
+		addVhost(r, conf.Vhosts["default"], true, relayConn, wsHubs)
 	}
 
 	return r
 }
 
-func serveHTTP(conf Config, relayConn iris.Connection) error {
-	http.Handle("/", initRouter(conf, relayConn))
+func serveHTTP(conf Config, router *mux.Router) error {
+	http.Handle("/", router)
 	return http.ListenAndServe(conf.Listen, nil)
 }
 
@@ -206,6 +233,20 @@ func main() {
 
 	log.Println("Got config:", conf)
 
+	wsHubs := make(map[string]*retinaws.External)
+	for name, wsconf := range conf.Websockethubs {
+		internalHttp := retinaws.NewInternal()
+		wsHubs[name] = &retinaws.External{Router: internalHttp.Router, Timeout: 30 * time.Second}
+
+		go func() {
+			log.Println("WS Listiner starting on:", wsconf.Listen)
+			err := http.ListenAndServe(wsconf.Listen, internalHttp)
+			if err != nil {
+				log.Fatalln("Unable to start ws listener", wsconf, "-", err)
+			}
+		}()
+	}
+
 	var relayConn iris.Connection
 	if conf.Irisport > 0 {
 		relayConn, err := dialRelay(conf)
@@ -215,8 +256,10 @@ func main() {
 		defer relayConn.Close()
 	}
 
+	router := initRouter(conf, relayConn, wsHubs)
+
 	log.Println("HTTP server listening on:", conf.Listen)
-	err = serveHTTP(conf, relayConn)
+	err = serveHTTP(conf, router)
 	if err != nil {
 		log.Fatalln("Error in serveHTTP:", err)
 	}
