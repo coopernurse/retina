@@ -45,7 +45,7 @@ func (s *S) TestFiveBackends(c *C) {
 	f.StartBackend(50, 20*time.Millisecond)
 	f.StartTimer()
 	f.RunEchoClient(15, time.Second)
-	f.RunAddClient(5, time.Second)
+	f.RunAddClient(100, 10*time.Second)
 	f.WaitForClients()
 	f.LogThroughput("TestFiveBackends")
 	f.VerifyMessages()
@@ -77,7 +77,7 @@ func (s *S) TestRandomBackendFailureButOneAlwaysRunning(c *C) {
 	f.StartBackend(5, 0)
 	b := f.StartBackend(5, 20*time.Millisecond)
 	f.StartTimer()
-	f.RunEchoClient(15, 30*time.Second)
+	f.RunEchoClient(60, 30*time.Second)
 	end := time.Now().Add(25 * time.Second)
 	for time.Now().Before(end) {
 		b.Runner.Stop()
