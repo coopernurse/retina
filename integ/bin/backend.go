@@ -62,19 +62,18 @@ func main() {
 	flag.IntVar(&workers, "w", 10, "Number of workers")
 	flag.Parse()
 
-	if logFname == "" {
-		log.Fatalln("-l flag not provided")
-	}
 	if msgFname == "" {
 		log.Fatalln("-m flag not provided")
 	}
 
-	logFile, err := os.Create(logFname)
-	if err != nil {
-		log.Fatalln("Cannot write to log file:", logFile, err)
+	if logFname != "" {
+		logFile, err := os.Create(logFname)
+		if err != nil {
+			log.Fatalln("Cannot write to log file:", logFile, err)
+		}
+		defer logFile.Close()
+		log.SetOutput(logFile)
 	}
-	defer logFile.Close()
-	log.SetOutput(logFile)
 
 	msgFile, err := os.Create(msgFname)
 	if err != nil {
@@ -99,7 +98,6 @@ func main() {
 	log.Println("backend: starting")
 	run(wsUrl, workers, done, msgs)
 	close(msgs)
-	logFile.Sync()
 	msgFile.Sync()
 	log.Println("backend: exiting")
 }
