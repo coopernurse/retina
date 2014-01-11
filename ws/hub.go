@@ -43,6 +43,7 @@ func NewRouter() *Router {
 type Router struct {
 	byQueue map[string]chan *Request
 	lock    *sync.Mutex
+	resend  int
 }
 
 func (me *Router) Destroy() {
@@ -68,14 +69,19 @@ func (me *Router) getQueueChannel(queue string) chan *Request {
 
 func (me *Router) send(req *Request) {
 	ch := me.getQueueChannel(req.Queue)
+	ackTimeout := req.Deadline.Sub(time.Now()) / 3
 	for time.Now().Before(req.Deadline) {
 		select {
 		case ch <- req:
 			select {
 			case <-req.Ack:
 				return
-			case <-time.After(5 * time.Second):
+			case <-time.After(ackTimeout):
 				// re-send
+				me.lock.Lock()
+				me.resend++
+				me.lock.Unlock()
+				log.Println("router resend: ", me.resend, string(req.Body))
 			}
 		case <-time.After(time.Second):
 			// try again
