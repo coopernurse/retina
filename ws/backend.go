@@ -38,13 +38,14 @@ func BackendServer(wsUrl string, workers int, handler MessageHandler, stop <-cha
 	conn := NewConnection(ws, toRetina, fromRetina)
 
 	// internal channel for worker goroutines
-	toWorkers := make(chan *internalMessage)
+	//toWorkers := make(chan *internalMessage)
 
 	workerWg := &sync.WaitGroup{}
-	for i := 0; i < workers; i++ {
-		workerWg.Add(1)
-		go backendWorker(handler, workerWg, toWorkers, toRetina)
-	}
+
+	// for i := 0; i < workers; i++ {
+	// 	workerWg.Add(1)
+	// 	go backendWorker(handler, workerWg, toWorkers, toRetina)
+	// }
 
 	go conn.readPump()
 	go func() {
@@ -58,7 +59,7 @@ func BackendServer(wsUrl string, workers int, handler MessageHandler, stop <-cha
 		case msg, ok := <-fromRetina:
 			if !ok {
 				log.Println("BackendServer: fromRetina closed, stopping workers")
-				close(toWorkers)
+				//close(toWorkers)
 				workerWg.Wait()
 				close(toRetina)
 				return
@@ -69,7 +70,13 @@ func BackendServer(wsUrl string, workers int, handler MessageHandler, stop <-cha
 					log.Println("BackendServer: worker got request without X-Hub-Id header")
 				} else {
 					toRetina <- reply(ackHeaders, ackBody, id)
-					toWorkers <- &internalMessage{id: id, headers: headers, body: body}
+					workerWg.Add(1)
+					go func() {
+						respHeaders, respBody := handler(headers, body)
+						toRetina <- reply(respHeaders, respBody, id)
+						workerWg.Done()
+					}()
+					//toWorkers <- &internalMessage{id: id, headers: headers, body: body}
 				}
 			}
 		case <-stop:
