@@ -215,7 +215,21 @@ func (me *Internal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	count := 0
 	requestMap := make(map[string]*Request)
 
+	reapRequestMapInterval := 5 * time.Minute
+	nextReap := time.Now().Add(reapRequestMapInterval)
+
 	for {
+		now := time.Now()
+		if now.After(nextReap) {
+			for id, req := range requestMap {
+				if req.Deadline.Before(now) {
+					log.Println("retinaws: removing timed out request:", id)
+					delete(requestMap, id)
+				}
+			}
+			nextReap = time.Now().Add(reapRequestMapInterval)
+		}
+
 		chosen, value, ok := reflect.Select(channels)
 		if !ok {
 			log.Println("retinaws: reflect.Select returned closed channel - exiting:", chosen)
