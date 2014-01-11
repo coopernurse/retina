@@ -8,6 +8,12 @@ import (
 
 type MessageHandler func(headers map[string][]string, body []byte) (map[string][]string, []byte)
 
+type internalMessage struct {
+	id      []string
+	headers map[string][]string
+	body    []byte
+}
+
 func BackendServer(wsUrl string, workers int, handler MessageHandler, stop <-chan bool) {
 	dialer := websocket.Dialer{ReadBufferSize: 2048, WriteBufferSize: 2048}
 	ws, _, err := dialer.Dial(wsUrl, nil)
@@ -32,7 +38,7 @@ func BackendServer(wsUrl string, workers int, handler MessageHandler, stop <-cha
 	conn := NewConnection(ws, toRetina, fromRetina)
 
 	// internal channel for worker goroutines
-	toWorkers := make(chan *Message)
+	toWorkers := make(chan *internalMessage)
 
 	workerWg := &sync.WaitGroup{}
 	for i := 0; i < workers; i++ {
@@ -57,7 +63,14 @@ func BackendServer(wsUrl string, workers int, handler MessageHandler, stop <-cha
 				close(toRetina)
 				return
 			} else if msg.Type == websocket.BinaryMessage {
-				toWorkers <- msg
+				headers, body := ParseFrame(msg.Data)
+				id, ok := headers["X-Hub-Id"]
+				if !ok {
+					log.Println("BackendServer: worker got request without X-Hub-Id header")
+				} else {
+					toRetina <- reply(ackHeaders, ackBody, id)
+					toWorkers <- &internalMessage{id: id, headers: headers, body: body}
+				}
 			}
 		case <-stop:
 			log.Println("BackendServer: stop received")
@@ -68,7 +81,7 @@ func BackendServer(wsUrl string, workers int, handler MessageHandler, stop <-cha
 	log.Println("BackendServer: exiting")
 }
 
-func backendWorker(handler MessageHandler, wg *sync.WaitGroup, in, out chan *Message) {
+func backendWorker(handler MessageHandler, wg *sync.WaitGroup, in chan *internalMessage, out chan *Message) {
 	defer wg.Done()
 	for {
 		msg, ok := <-in
@@ -76,18 +89,20 @@ func backendWorker(handler MessageHandler, wg *sync.WaitGroup, in, out chan *Mes
 			log.Println("BackendServer: worker done")
 			return
 		}
-		headers, body := ParseFrame(msg.Data)
-		id, ok := headers["X-Hub-Id"]
-		if !ok {
-			log.Println("BackendServer: worker got request without X-Hub-Id header")
-		} else {
-			respHeaders, respBody := handler(headers, body)
-			if respHeaders == nil {
-				respHeaders = make(map[string][]string)
-			}
-			respHeaders["X-Hub-Id"] = id
-			respFrame := WriteFrame(respHeaders, respBody)
-			out <- &Message{Type: websocket.BinaryMessage, Data: respFrame}
-		}
+
+		respHeaders, respBody := handler(msg.headers, msg.body)
+		out <- reply(respHeaders, respBody, msg.id)
 	}
+}
+
+var ackHeaders = map[string][]string{"X-Hub-ControlOp": []string{"ack"}}
+var ackBody = []byte("ack")
+
+func reply(headers map[string][]string, body []byte, id []string) *Message {
+	if headers == nil {
+		headers = make(map[string][]string)
+	}
+	headers["X-Hub-Id"] = id
+	respFrame := WriteFrame(headers, body)
+	return &Message{Type: websocket.BinaryMessage, Data: respFrame}
 }

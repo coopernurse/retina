@@ -163,7 +163,7 @@ func (me *Fixture) LogThroughput(msg string) {
 	defer me.lock.Unlock()
 	elapsed := time.Now().UnixNano() - me.benchStart
 	reqSec := float64(len(me.OutMsgs)) / (float64(elapsed) / 1e9)
-	log.Printf("Throughput: %s - %.1f req/sec\n", msg, reqSec)
+	log.Printf("Throughput: %s - %d messages - %.1f req/sec\n", msg, len(me.OutMsgs), reqSec)
 }
 
 func (me *Fixture) VerifyMessages() {

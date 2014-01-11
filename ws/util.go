@@ -68,7 +68,9 @@ func WriteFrame(headers map[string][]string, data []byte) []byte {
 	}
 
 	buf.Write(endOfLine)
-	buf.Write(data)
+	if data != nil {
+		buf.Write(data)
+	}
 
 	return buf.Bytes()
 }

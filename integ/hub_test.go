@@ -57,15 +57,34 @@ func (s *S) TestRandomBackendFailure(c *C) {
 	f.StartRetina(20 * time.Millisecond)
 	b := f.StartBackend(5, 20*time.Millisecond)
 	f.StartTimer()
-	f.RunEchoClient(15, 5*time.Second)
-	end := time.Now().Add(4 * time.Second)
+	f.RunEchoClient(15, 50*time.Second)
+	end := time.Now().Add(47 * time.Second)
 	for time.Now().Before(end) {
 		b.Runner.Stop()
 		time.Sleep(time.Duration(rand.Intn(1000)+500) * time.Millisecond)
 		b = f.StartBackend(5, 200*time.Millisecond)
 		log.Println("TestRandomBackendFailure: Backend restarted")
 	}
+	f.WaitForClients()
+	f.LogThroughput("TestRandomBackendFailure")
+	f.VerifyMessages()
+}
+
+func (s *S) TestRandomBackendFailureButOneAlwaysRunning(c *C) {
+	f = NewFixture(c)
+	defer f.Destroy()
+	f.StartRetina(20 * time.Millisecond)
 	f.StartBackend(5, 0)
+	b := f.StartBackend(5, 20*time.Millisecond)
+	f.StartTimer()
+	f.RunEchoClient(15, 30*time.Second)
+	end := time.Now().Add(30 * time.Second)
+	for time.Now().Before(end) {
+		b.Runner.Stop()
+		time.Sleep(time.Duration(rand.Intn(1000)+500) * time.Millisecond)
+		b = f.StartBackend(5, 200*time.Millisecond)
+		log.Println("TestRandomBackendFailure: Backend restarted")
+	}
 	f.WaitForClients()
 	f.LogThroughput("TestRandomBackendFailure")
 	f.VerifyMessages()

@@ -20,7 +20,9 @@ type Request struct {
 	HTTPURI    string
 	Headers    map[string][]string
 	Body       []byte
+	Ack        chan bool
 	ReplyTo    chan *Response
+	Deadline   time.Time
 }
 
 type Response struct {
@@ -52,7 +54,7 @@ func (me *Router) Destroy() {
 	me.byQueue = make(map[string]chan *Request)
 }
 
-func (me *Router) GetQueueChannel(queue string) chan *Request {
+func (me *Router) getQueueChannel(queue string) chan *Request {
 	me.lock.Lock()
 	defer me.lock.Unlock()
 
@@ -64,7 +66,29 @@ func (me *Router) GetQueueChannel(queue string) chan *Request {
 	return ch
 }
 
+func (me *Router) send(req *Request) {
+	ch := me.getQueueChannel(req.Queue)
+	for time.Now().Before(req.Deadline) {
+		select {
+		case ch <- req:
+			select {
+			case <-req.Ack:
+				return
+			case <-time.After(5 * time.Second):
+				// re-send
+			}
+		case <-time.After(time.Second):
+			// try again
+		}
+	}
+}
+
 ////////////////////////////////////////////
+
+var timeoutResponse = &Response{
+	HTTPStatus: 504,
+	Body:       []byte("Request timed out"),
+}
 
 type External struct {
 	Router  *Router
@@ -77,12 +101,12 @@ func (me *External) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if queue == "" || !ok {
 		fmt.Fprintf(w, "queue is undefined on URL")
 	} else {
-		r, err := fromHttpRequest(queue, req)
+		r, err := me.fromHttpRequest(queue, req)
 		if err != nil {
 			w.WriteHeader(500)
 			fmt.Fprintf(w, "Error reading req: %v", err)
 		} else {
-			resp := me.process(r, me.Timeout)
+			resp := me.send(r)
 			if resp.Headers != nil {
 				headers := w.Header()
 				for name, val := range resp.Headers {
@@ -101,30 +125,18 @@ func (me *External) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func (me *External) process(req *Request, timeout time.Duration) *Response {
-	ch := me.Router.GetQueueChannel(req.Queue)
+func (me *External) send(req *Request) *Response {
+	me.Router.send(req)
 
-	// send - may block waiting for backends to attach
 	select {
-	case ch <- req:
-		select {
-		case res := <-req.ReplyTo:
-			return res
-		case <-time.After(timeout):
-			return &Response{
-				HTTPStatus: 504,
-				Body:       []byte("Request timed out"),
-			}
-		}
-	case <-time.After(timeout):
-		return &Response{
-			HTTPStatus: 504,
-			Body:       []byte("Request timed out"),
-		}
+	case res := <-req.ReplyTo:
+		return res
+	case <-time.After(req.Deadline.Sub(time.Now())):
+		return timeoutResponse
 	}
 }
 
-func fromHttpRequest(queue string, hr *http.Request) (*Request, error) {
+func (me *External) fromHttpRequest(queue string, hr *http.Request) (*Request, error) {
 	buf := bytes.Buffer{}
 	_, err := buf.ReadFrom(hr.Body)
 	if err != nil {
@@ -137,7 +149,9 @@ func fromHttpRequest(queue string, hr *http.Request) (*Request, error) {
 		Queue:      queue,
 		Headers:    hr.Header,
 		Body:       buf.Bytes(),
+		Ack:        make(chan bool, 1),
 		ReplyTo:    make(chan *Response, 1),
+		Deadline:   time.Now().Add(me.Timeout),
 	}, nil
 }
 
@@ -186,7 +200,7 @@ func (me *Internal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	channels[0] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(recv)}
 
 	for i, queue := range queues {
-		ch := me.Router.GetQueueChannel(queue)
+		ch := me.Router.getQueueChannel(queue)
 		log.Println("registering with queue:", queue)
 		channels[i+1] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ch)}
 	}
@@ -218,17 +232,22 @@ func (me *Internal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					id := ids[0]
 					req, ok := requestMap[id]
 					if ok {
-						statusCode := 200
-						status, ok := headers["X-Hub-Status"]
-						if ok && len(status) > 0 {
-							statusCode, _ = strconv.Atoi(status[0])
+						op, ok := headers["X-Hub-ControlOp"]
+						if ok && len(op) > 0 && op[0] == "ack" {
+							req.Ack <- true
+						} else {
+							statusCode := 200
+							status, ok := headers["X-Hub-Status"]
+							if ok && len(status) > 0 {
+								statusCode, _ = strconv.Atoi(status[0])
+							}
+							req.ReplyTo <- &Response{
+								HTTPStatus: statusCode,
+								Headers:    headers,
+								Body:       body,
+							}
+							delete(requestMap, id)
 						}
-						req.ReplyTo <- &Response{
-							HTTPStatus: statusCode,
-							Headers:    headers,
-							Body:       body,
-						}
-						delete(requestMap, id)
 					} else {
 						log.Printf("retinaws: request not found with id: %s", id)
 					}
@@ -257,7 +276,6 @@ func (me *Internal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			headers["X-Hub-Id"] = []string{id}
 			headers["X-Hub-Queue"] = []string{req.Queue}
 			frame := WriteFrame(headers, req.Body)
-			log.Println("Sending message to client:", chosen, id)
 			send <- &Message{Type: websocket.BinaryMessage, Data: frame}
 		}
 	}
