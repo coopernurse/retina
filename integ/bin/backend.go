@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 func run(url string, workers int, done chan bool, msgs chan string) {
@@ -31,12 +32,19 @@ func run(url string, workers int, done chan bool, msgs chan string) {
 					sum += x
 				}
 				return nil, []byte(strconv.Itoa(sum))
+			case "sleep":
+				parts := strings.Split(string(body), ",")
+				if len(parts) == 2 {
+					sleepMillis, _ := strconv.Atoi(parts[0])
+					time.Sleep(time.Duration(sleepMillis) * time.Millisecond)
+				}
+				return nil, body
 			default:
 				return map[string][]string{"X-Hub-Status": []string{"500"}}, []byte("Unknown queue: " + queue[0])
 			}
 		}
 	}
-	url = url + "echo,add"
+	url = url + "echo,add,sleep"
 	retinaws.BackendServer(url, workers, handler, done)
 }
 
