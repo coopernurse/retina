@@ -36,6 +36,7 @@ type Vhost struct {
 	Rpc       RpcConf
 	Proxy     map[string]string
 	Wshub     map[string]string
+	Aliases   map[string]string
 }
 
 type Config struct {
@@ -152,7 +153,15 @@ func addWsHubHandler(r *mux.Router, host string, paths map[string]string, wsHubs
 	}
 }
 
-func addStaticHandler(r *mux.Router, host, docroot string) {
+func addStaticHandler(r *mux.Router, host, docroot string, aliases map[string]string) {
+	for alias, aliasroot := range aliases {
+		log.Println("Adding alias", nameForHost(host), alias, " with docroot:", aliasroot)
+		h := http.FileServer(http.Dir(aliasroot))
+		addHostToRoute(host, r.PathPrefix(alias).HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			req.URL.Path = req.URL.Path[len(alias):]
+			h.ServeHTTP(w, req)
+		}))
+	}
 	log.Println("Configuring", nameForHost(host), "with docroot:", docroot)
 	addHostToRoute(host, r.PathPrefix("/").Handler(http.FileServer(http.Dir(docroot))))
 }
@@ -175,14 +184,14 @@ func addVhost(r *mux.Router, vhost Vhost, isDefault bool, relayConn iris.Connect
 		addWsHubHandler(r, host, vhost.Wshub, wsHubs)
 
 		// this must be last - will serve all other paths
-		addStaticHandler(r, host, vhost.Docroot)
+		addStaticHandler(r, host, vhost.Docroot, vhost.Aliases)
 	}
 
 	if isDefault {
 		addRpcHandler(r, "", vhost.Rpc, relayConn)
 		addProxyHandlers(r, "", vhost.Proxy)
 		addWsHubHandler(r, "", vhost.Wshub, wsHubs)
-		addStaticHandler(r, "", vhost.Docroot)
+		addStaticHandler(r, "", vhost.Docroot, vhost.Aliases)
 	}
 }
 
