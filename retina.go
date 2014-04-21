@@ -173,7 +173,10 @@ func addProxyHandlers(r *mux.Router, host string, proxy map[string]string) {
 			panic(err)
 		}
 		log.Println("Proxying", nameForHost(host), path, "to:", endpoint)
-		addHostToRoute(host, r.PathPrefix(path).Handler(httputil.NewSingleHostReverseProxy(u))).Methods("GET", "POST", "PUT", "HEAD", "DELETE")
+		proxy := httputil.NewSingleHostReverseProxy(u)
+		proxytrans := &http.Transport{Proxy: http.ProxyFromEnvironment, DisableKeepAlives: true}
+		proxy.Transport = proxytrans
+		addHostToRoute(host, r.PathPrefix(path).Handler(proxy)).Methods("GET", "POST", "PUT", "HEAD", "DELETE")
 	}
 }
 
