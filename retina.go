@@ -6,7 +6,7 @@ import (
 	"flag"
 	"github.com/coopernurse/retina/ws"
 	"github.com/gorilla/mux"
-	"github.com/karalabe/iris-go"
+	"gopkg.in/project-iris/iris-go.v1"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -111,7 +111,7 @@ func addHostToRoute(host string, route *mux.Route) *mux.Route {
 	return route
 }
 
-func addRpcHandler(r *mux.Router, host string, rpc RpcConf, relayConn iris.Connection) {
+func addRpcHandler(r *mux.Router, host string, rpc RpcConf, relayConn *iris.Connection) {
 	if rpc.Path != "" {
 		if relayConn == nil {
 			log.Println("Iris not enabled - skipping config for path:", rpc.Path)
@@ -129,7 +129,7 @@ func addRpcHandler(r *mux.Router, host string, rpc RpcConf, relayConn iris.Conne
 
 		log.Println("Configuring", nameForHost(host), "with RPC path:", path)
 		handler := &IrisGateway{
-			Conn:    relayConn,
+			Conn:    *relayConn,
 			Timeout: time.Second * time.Duration(rpc.Timeout),
 		}
 		addHostToRoute(host, r.Handle(path, handler)).Methods("POST")
@@ -180,7 +180,7 @@ func addProxyHandlers(r *mux.Router, host string, proxy map[string]string) {
 	}
 }
 
-func addVhost(r *mux.Router, vhost Vhost, isDefault bool, relayConn iris.Connection, wsHubs map[string]*retinaws.External) {
+func addVhost(r *mux.Router, vhost Vhost, isDefault bool, relayConn *iris.Connection, wsHubs map[string]*retinaws.External) {
 	for _, host := range vhost.Hostnames {
 		addRpcHandler(r, host, vhost.Rpc, relayConn)
 		addProxyHandlers(r, host, vhost.Proxy)
@@ -198,7 +198,7 @@ func addVhost(r *mux.Router, vhost Vhost, isDefault bool, relayConn iris.Connect
 	}
 }
 
-func initRouter(conf Config, relayConn iris.Connection, wsHubs map[string]*retinaws.External) *mux.Router {
+func initRouter(conf Config, relayConn *iris.Connection, wsHubs map[string]*retinaws.External) *mux.Router {
 	r := mux.NewRouter()
 
 	addDefault := false
@@ -222,8 +222,8 @@ func serveHTTP(conf Config, router *mux.Router) error {
 	return http.ListenAndServe(conf.Listen, nil)
 }
 
-func dialRelay(conf Config) (iris.Connection, error) {
-	conn, err := iris.Connect(conf.Irisport, "", nil)
+func dialRelay(conf Config) (*iris.Connection, error) {
+	conn, err := iris.Connect(conf.Irisport)
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +259,7 @@ func main() {
 		}()
 	}
 
-	var relayConn iris.Connection
+	var relayConn *iris.Connection
 	if conf.Irisport > 0 {
 		relayConn, err := dialRelay(conf)
 		if err != nil {
